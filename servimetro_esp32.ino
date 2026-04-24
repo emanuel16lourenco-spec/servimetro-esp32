@@ -88,8 +88,7 @@ WiFiManager wm;
 // ========================================================
 
 void inicializarEthernet() {
-  Serial.println("
---- Inicializando Ethernet W5500 ---");
+  Serial.println("--- Inicializando Ethernet W5500 ---");
   
   ethernetSPI.begin(18, 19, 23, W5500_CS);
   Ethernet.init(W5500_CS);
@@ -109,8 +108,7 @@ void inicializarEthernet() {
 }
 
 void enviarSetpointAoAdditel(float setpoint) {
-  Serial.println("
---- Enviando Setpoint ao Additel ---");
+  Serial.println("--- Enviando Setpoint ao Additel ---");
   
   digitalWrite(XPT2046_CS, HIGH);   
   digitalWrite(MAX31865_CS, HIGH);  
