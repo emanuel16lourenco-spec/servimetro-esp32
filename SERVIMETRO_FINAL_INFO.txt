@@ -1,0 +1,232 @@
+================================================================================
+SERVIMETRO FINAL - ESP32 + ETHERNET W5500 + ADDITEL 875
+================================================================================
+
+FICHEIRO: servimetro_final.ino
+TAMANHO: ~18 KB
+LINHAS: ~700
+PLACA: ESP32-WROOM-32
+DATA: 2026-04-24
+STATUS: ✅ PRONTO PARA UPLOAD
+
+================================================================================
+DESCRICAO
+================================================================================
+
+Sistema integrado de controlo de temperatura com:
+- Leitura de PT100 (MAX31865)
+- Display TFT 3.5" com Touchscreen
+- Comunicacao Ethernet W5500
+- Integracao com Additel 875
+- WiFi para transmissao de dados
+- Calibracao por 4 pontos lineares
+
+================================================================================
+FUNCIONALIDADES
+================================================================================
+
+✅ Leitura PT100 com MAX31865 (4 fios)
+✅ Calibracao por 4 pontos de segmentos lineares
+✅ Display TFT 3.5" com touchscreen XPT2046
+✅ Ethernet W5500 isolado em HSPI
+✅ Comunicacao SCPI com Additel 875
+✅ Envio automatico de setpoint
+✅ Leitura periodica de status (30 segundos)
+✅ WiFi para transmissao de dados
+✅ Protecao por senha (padrao: 1998)
+✅ Armazenamento de dados em Flash
+✅ Menu intuitivo com 6 ecras diferentes
+✅ Isolamento correto entre SPI (sem conflitos)
+
+================================================================================
+CONFIGURACAO DE HARDWARE
+================================================================================
+
+W5500 (Ethernet):
+  CS = 27
+  CLK = 18
+  MISO = 19
+  MOSI = 23
+  Interface: HSPI
+
+MAX31865 (PT100):
+  CS = 4
+  Interface: SPI padrao
+
+Touchscreen XPT2046:
+  CS = 33
+  CLK = 25
+  MOSI = 32
+  MISO = 39
+  IRQ = 36
+  Interface: VSPI
+
+TFT Display:
+  Interface: SPI padrao
+
+================================================================================
+CONFIGURACAO DE REDE
+================================================================================
+
+IP ESP32: 192.168.0.201
+IP Additel 875: 192.168.0.182
+Porta Additel: 8000
+Gateway: 192.168.0.1
+Subnet: 255.255.255.0
+MAC Address: DE:AD:BE:EF:FE:ED
+
+================================================================================
+COMANDOS ADDITEL 875 (SCPI)
+================================================================================
+
+Enviar Temperatura de Controlo (Exemplo: 50°C):
+  SOURce:TEMPerature:TARGet 50,1001\r\n
+
+Ler Status (Estavel, Atingiu Alvo):
+  MEASure:SCALar:CONTrol?\r\n
+
+Ler Identificacao:
+  *IDN?\r\n
+
+Formato de Resposta:
+  unitId, temp, diff, estado, pot_aquec, pot_vent, ESTAVEL(1|0), ATINGIU(1|0)
+
+Explicacao:
+  - ESTAVEL: 1 = estavel, 0 = nao estavel
+  - ATINGIU: 1 = atingiu alvo, 0 = nao atingiu
+
+================================================================================
+BIBLIOTECAS NECESSARIAS
+================================================================================
+
+Instala via Arduino IDE -> Sketch -> Include Library -> Manage Libraries:
+
+1. TFT_eSPI
+2. XPT2046_Touchscreen
+3. Adafruit MAX31865
+4. WiFiManager
+5. Ethernet (incluida no ESP32)
+
+================================================================================
+COMO USAR
+================================================================================
+
+PASSO 1: Descarrega o ficheiro servimetro_final.ino
+PASSO 2: Abre Arduino IDE
+PASSO 3: Ficheiro -> Novo
+PASSO 4: Cola todo o codigo do ficheiro descarregado
+PASSO 5: Configura a placa:
+  - Ferramentas -> Placa -> ESP32-WROOM-32
+  - Ferramentas -> Porta -> COM (seleciona a porta do ESP32)
+  - Ferramentas -> Upload Speed -> 115200
+
+PASSO 6: Clica no botao Upload (seta para cima)
+PASSO 7: Aguarda o upload completar
+PASSO 8: Abre Serial Monitor (115200 baud) para ver feedback
+PASSO 9: Pronto! Sistema iniciado
+
+================================================================================
+ECRAS DO MENU
+================================================================================
+
+1. TEMPERATURA (Principal)
+   - Mostra temperatura em tempo real
+   - Botao config (canto superior direito)
+   - Status WiFi/Ethernet no header
+
+2. CONFIGURACAO
+   - Ajuste PT100
+   - Alterar Senha
+   - Configurar WiFi
+   - Voltar ao Menu
+
+3. LOGIN
+   - Teclado numerico
+   - Entrada de senha (mascarada)
+   - Validacao de acesso
+
+4. AJUSTE (Calibracao)
+   - 4 pontos de calibracao
+   - Edicao de valores
+   - Confirmacao de aplicacao
+
+5. TECLADO (Entrada de Dados)
+   - Numerico (0-9)
+   - Ponto decimal
+   - Sinal negativo
+   - Limpar e Gravar
+
+6. CONFIRMACAO
+   - Resumo dos pontos
+   - Opcao SIM/NAO
+   - Gravar em Flash
+
+================================================================================
+VARIAVES IMPORTANTES
+================================================================================
+
+Senha Padrao: 1998
+Intervalo Leitura Additel: 30 segundos
+Media PT100: 10 amostras
+Tempo Atualizacao Display: 500ms
+Pontos Calibracao: 4
+
+================================================================================
+NOTAS IMPORTANTES
+================================================================================
+
+1. O SPI esta isolado para evitar conflitos:
+   - VSPI para Touchscreen
+   - HSPI para Ethernet
+   - SPI Padrao para MAX31865 e TFT
+
+2. A comunicacao Ethernet so funciona se o W5500 estiver conectado
+
+3. O WiFi e opcional e funciona independentemente
+
+4. Os dados de calibracao sao armazenados em Flash (nao sao perdidos)
+
+5. A senha pode ser alterada via menu de configuracao
+
+6. O Additel 875 deve estar na mesma rede (192.168.0.x)
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problema: Display nao aparece
+Solucao: Verifica pinos TFT, tenta reiniciar ESP32
+
+Problema: Touchscreen nao responde
+Solucao: Verifica pinos VSPI, calibra se necessario
+
+Problema: Ethernet nao conecta
+Solucao: Verifica pinos W5500, testa cabo ethernet, verifica IP
+
+Problema: PT100 leitura estranha
+Solucao: Verifica ligacoes MAX31865, tenta calibrar
+
+Problema: WiFi nao conecta
+Solucao: Abre o portal de configuracao via botao WiFi no menu
+
+================================================================================
+REPOSITORIO GITHUB
+================================================================================
+
+Projeto: servimetro-esp32
+URL: https://github.com/emanuel16lourenco-spec/servimetro-esp32
+Criado: 2026-04-24
+Atualizacao: 2026-04-24
+
+================================================================================
+CONTATO E SUPORTE
+================================================================================
+
+Para questoes ou problemas, consulta:
+- Serial Monitor (debug output)
+- Documentacao do repositorio GitHub
+- Datasheets dos componentes (MAX31865, W5500, XPT2046, TFT_eSPI)
+
+================================================================================
+FIM DO DOCUMENTO
+================================================================================
