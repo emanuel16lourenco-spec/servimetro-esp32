@@ -1,0 +1,315 @@
+#include <FS.h>          
+#include <SPIFFS.h>      
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
+#include <Adafruit_MAX31865.h>
+#include <Preferences.h>
+#include <WiFi.h>      
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <WiFiManager.h> 
+
+TFT_eSPI tft = TFT_eSPI();
+Preferences prefs;
+
+#define VALOR_NULO -999.0  
+String senhaMestra = "1998"; 
+
+// --- PINOS TOUCH E SENSOR ---
+#define XPT2046_CS 33
+#define XPT2046_IRQ 36
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 39
+#define XPT2046_CLK 25
+SPIClass touchscreenSPI = SPIClass(VSPI);
+XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
+Adafruit_MAX31865 thermo = Adafruit_MAX31865(4, 23, 19, 18);
+
+float x_lido[4] = {0, 0, 0, 0}; 
+float y_real[4] = {VALOR_NULO, VALOR_NULO, VALOR_NULO, VALOR_NULO}; 
+float x_temp[4] = {0, 0, 0, 0};
+float y_temp[4] = {VALOR_NULO, VALOR_NULO, VALOR_NULO, VALOR_NULO};
+
+int currentScreen = 0; 
+int pontoEmEdicao = -1;
+String tecladoBuffer = "";
+float tempBrutaGlobal = 0.0, tempCorrigida = 0.0;
+unsigned long lastUpdate = 0;
+
+// --- VARIÁVEIS PARA MÉDIA DE 10 LEITURAS ---
+float somaLeituras = 0;
+int contadorLeituras = 0;
+
+bool modoAlterarSenha = false; 
+int passoAlterarSenha = 0; 
+
+WiFiManager wm;
+
+// --- FUNÇÕES DE CORREÇÃO E MEMÓRIA ---
+float aplicarCorrecao(float x) {
+  int n = 0, indices[4];
+  for (int i = 0; i < 4; i++) if (y_real[i] != VALOR_NULO) indices[n++] = i;
+  if (n < 2) return x;
+  int seg = 0;
+  for (int i = 0; i < n - 1; i++) { seg = i; if (x <= x_lido[indices[i+1]]) break; }
+  float x0 = x_lido[indices[seg]], y0 = y_real[indices[seg]];
+  float x1 = x_lido[indices[seg+1]], y1 = y_real[indices[seg+1]];
+  return (abs(x1 - x0) < 0.001) ? x + (y0 - x0) : y0 + (x - x0) * (y1 - y0) / (x1 - x0);
+}
+
+void gravarDados() {
+  prefs.begin("metrologia", false);
+  prefs.putString("senha", senhaMestra);
+  for(int i=0; i<4; i++) {
+    prefs.putFloat(("x"+String(i)).c_str(), x_lido[i]);
+    prefs.putFloat(("y"+String(i)).c_str(), y_real[i]);
+  }
+  prefs.end();
+}
+
+void carregarDados() {
+  prefs.begin("metrologia", true);
+  senhaMestra = prefs.getString("senha", "1998");
+  for(int i=0; i<4; i++) {
+    x_lido[i] = prefs.getFloat(("x"+String(i)).c_str(), 0.0);
+    y_real[i] = prefs.getFloat(("y"+String(i)).c_str(), VALOR_NULO);
+  }
+  prefs.end();
+}
+
+void resetarCamposAjuste() {
+  for(int i=0; i<4; i++) { x_temp[i] = 0.0; y_temp[i] = VALOR_NULO; }
+}
+
+void finalizarClique() {
+  while (touchscreen.touched()) { touchscreen.getPoint(); delay(10); }
+  delay(150); 
+}
+
+// --- INTERFACE GRÁFICA ---
+void drawWiFiSignal(int x, int y) {
+  int32_t dbm = WiFi.RSSI();
+  int bars = (WiFi.status() == WL_CONNECTED) ? (dbm > -50 ? 4 : (dbm > -65 ? 3 : (dbm > -75 ? 2 : (dbm > -85 ? 1 : 0)))) : 0;
+  for (int i = 0; i < 4; i++) {
+    tft.fillRect(x + (i * 6), y + (10 - (i * 3)), 3, (i * 3) + 3, (i < bars) ? TFT_WHITE : 0x5AEB);
+  }
+}
+
+void drawHeader() {
+  tft.fillRect(0, 0, 320, 40, 0x1A5CFF); 
+  tft.setTextColor(TFT_WHITE); tft.drawString("SERVIMETRO", 10, 12, 2);
+  if (WiFi.status() == WL_CONNECTED) {
+    tft.fillCircle(305, 20, 5, TFT_GREEN);
+    drawWiFiSignal(265, 12);
+    tft.setTextDatum(TR_DATUM); tft.drawString(WiFi.SSID().substring(0, 10), 255, 12, 1);
+  } else {
+    tft.fillCircle(305, 20, 5, TFT_RED);
+    tft.setTextDatum(TR_DATUM); tft.drawString("OFFLINE", 290, 12, 1);
+  }
+  tft.setTextDatum(TL_DATUM);
+}
+
+void drawConfigIcon(int centerX, int centerY, int diameter) {
+  uint16_t darkGrey = 0x3186; uint16_t blueNuc = 0x1A5CFF; 
+  tft.fillCircle(centerX, centerY, (diameter/2)-4, darkGrey);
+  for (int i = 0; i < 8; i++) {
+    float a1 = (i*45-18)*(PI/180.0), a2 = (i*45+18)*(PI/180.0), a3 = (i*45-10)*(PI/180.0), a4 = (i*45+10)*(PI/180.0);
+    int r = (diameter/2)-4;
+    tft.fillTriangle(centerX+r*cos(a1), centerY+r*sin(a1), centerX+(r+5)*cos(a3), centerY+(r+5)*sin(a3), centerX+(r+5)*cos(a4), centerY+(r+5)*sin(a4), darkGrey);
+    tft.fillTriangle(centerX+r*cos(a1), centerY+r*sin(a1), centerX+(r+5)*cos(a4), centerY+(r+5)*sin(a4), centerX+r*cos(a2), centerY+r*sin(a2), darkGrey);
+  }
+  tft.fillCircle(centerX, centerY, (diameter/2)-7, darkGrey); tft.fillCircle(centerX, centerY, (diameter/2)-10, blueNuc); 
+}
+
+void drawMainScreen() {
+  currentScreen = 0; tft.fillScreen(TFT_WHITE); drawHeader();
+  tft.setTextColor(0x0D2B7F); tft.drawCentreString("TEMPERATURA", 160, 55, 2); 
+  tft.drawRoundRect(20, 80, 280, 100, 10, 0x1A5CFF); 
+  drawConfigIcon(280, 215, 24); 
+  updateMainScreen();
+}
+
+void updateMainScreen() {
+    tft.fillRoundRect(22, 82, 276, 96, 8, 0x6BA3FF); 
+    tft.setTextColor(TFT_BLACK, 0x6BA3FF);
+    String temp = String(tempCorrigida, 2);
+    tft.drawCentreString(temp, 135, 105, 7);  
+    tft.fillCircle(217, 125, 3, TFT_BLACK);
+    tft.drawString("C", 225, 125, 4);
+}
+
+void drawConfigScreen() {
+  currentScreen = 1; tft.fillScreen(TFT_WHITE); drawHeader();
+  tft.fillRoundRect(40, 70, 240, 35, 8, 0x1A5CFF); tft.setTextColor(TFT_WHITE); tft.drawCentreString("AJUSTE PT100", 160, 80, 2);
+  tft.fillRoundRect(40, 115, 240, 35, 8, 0x1A5CFF); tft.drawCentreString("ALTERAR SENHA", 160, 125, 2);
+  tft.fillRoundRect(40, 160, 240, 35, 8, 0xF800); tft.drawCentreString("CONFIGURAR WIFI", 160, 170, 2);
+  tft.setTextColor(TFT_RED); tft.drawCentreString("VOLTAR AO MENU", 160, 215, 2);
+}
+
+void updateLoginDisplay() {
+  tft.fillRect(82, 42, 156, 26, TFT_BLACK); tft.setTextColor(TFT_WHITE);
+  String asteriscos = ""; for(int i=0; i<tecladoBuffer.length(); i++) asteriscos += "*";
+  tft.drawCentreString(asteriscos, 160, 46, 4);
+}
+
+void drawLoginScreen(String msg, uint16_t corMsg) {
+  currentScreen = 6; tft.fillScreen(TFT_BLACK);
+  tft.fillRect(0, 0, 320, 30, corMsg); tft.setTextColor(TFT_WHITE); tft.drawCentreString(msg, 160, 7, 2);
+  tft.drawRect(80, 40, 160, 30, TFT_WHITE); updateLoginDisplay(); 
+  String teclas[12] = {"1","2","3","4","5","6","7","8","9","CLR","0","OK"};
+  for(int i=0; i<12; i++) {
+    int r = i / 3, c = i % 3;
+    tft.drawRoundRect(60 + (c*70), 80 + (r * 35), 60, 30, 4, TFT_WHITE);
+    tft.drawCentreString(teclas[i], 90 + (c*70), 87 + (r * 35), 2);
+  }
+  tft.setTextColor(TFT_RED); tft.drawCentreString("CANCELAR", 160, 220, 2);
+}
+
+void drawAjusteScreen() {
+  currentScreen = 3; tft.fillScreen(TFT_WHITE); drawHeader();
+  tft.setTextColor(0x0D2B7F); tft.drawCentreString("AJUSTE POR SEGMENTOS", 160, 45, 2);
+  int pontosValidos = 0;
+  for(int i = 0; i < 4; i++) {
+    if ((i == 0) || (y_temp[i] != VALOR_NULO) || (i > 0 && y_temp[i-1] != VALOR_NULO)) {
+      int yPos = 90 + (i * 26);
+      tft.setTextColor(TFT_BLACK);
+      float valorVisivel = (y_temp[i] != VALOR_NULO) ? aplicarCorrecao(x_temp[i]) : 0.0;
+      tft.drawString("P" + String(i+1) + ": " + (y_temp[i] != VALOR_NULO ? String(valorVisivel, 2) : ""), 10, yPos + 3, 2);
+      tft.fillRoundRect(125, yPos, 185, 22, 3, 0x1A5CFF);
+      tft.setTextColor(TFT_WHITE); tft.drawCentreString((y_temp[i] == VALOR_NULO) ? "EDITAR VALOR" : "Padrao= " + String(y_temp[i], 2), 217, yPos + 3, 2);
+    }
+    if (y_temp[i] != VALOR_NULO) pontosValidos++;
+  }
+  tft.setTextColor(TFT_RED); tft.drawCentreString("VOLTAR", 60, 215, 2);
+  tft.fillRoundRect(160, 205, 140, 30, 5, (pontosValidos >= 2) ? TFT_GREEN : 0xAD55);
+  tft.setTextColor(TFT_WHITE); tft.drawCentreString("AJUSTAR", 230, 212, 2);
+}
+
+void drawConfirmacaoAjuste() {
+  currentScreen = 5; tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(0x1A5CFF); tft.drawCentreString("CONFIRMAR NOVOS PONTOS", 160, 15, 2);
+  int yResumo = 50;
+  for(int i=0; i<4; i++) if(y_temp[i] != VALOR_NULO) {
+    float valorVisivel = aplicarCorrecao(x_temp[i]);
+    tft.setTextColor(0x6BA3FF); tft.drawString("P" + String(i+1) + ": " + String(valorVisivel, 2) + " C", 40, yResumo, 2);
+    tft.setTextColor(TFT_GREEN); tft.drawString("-> " + String(y_temp[i], 2) + " C", 180, yResumo, 2);
+    yResumo += 22;
+  }
+  tft.setTextColor(TFT_WHITE); tft.drawCentreString("DESEJA APLICAR E GRAVAR?", 160, 160, 2);
+  tft.fillRoundRect(30, 190, 120, 40, 5, TFT_RED); tft.drawCentreString("NAO", 90, 202, 2);
+  tft.fillRoundRect(170, 190, 120, 40, 5, TFT_GREEN); tft.setTextColor(TFT_BLACK); tft.drawCentreString("SIM", 230, 202, 2);
+}
+
+void drawTeclado() {
+  currentScreen = 4; tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE); tft.drawCentreString("PADRAO P" + String(pontoEmEdicao + 1), 160, 10, 2);
+  tft.drawRect(80, 40, 160, 35, TFT_WHITE); tft.drawCentreString(tecladoBuffer, 160, 48, 4);
+  String teclas[12] = {"1","2","3","4","5","6","7","8","9","-","0","."};
+  for(int i=0; i<12; i++) {
+    int r = i / 3, c = i % 3;
+    tft.drawRoundRect(60 + (c*70), 85 + (r * 28), 60, 25, 4, TFT_WHITE); tft.drawCentreString(teclas[i], 90 + (c*70), 90 + (r * 28), 2);
+  }
+  tft.fillRoundRect(30, 205, 120, 30, 4, TFT_RED); tft.drawCentreString("LIMPAR", 90, 212, 2);
+  tft.fillRoundRect(170, 205, 120, 30, 4, TFT_GREEN); tft.drawCentreString("GRAVAR", 230, 212, 2);
+}
+
+void handleTouch(int tx, int ty) {
+  if (currentScreen == 7) { if (ty > 190) { finalizarClique(); wm.stopConfigPortal(); drawConfigScreen(); } return; }
+  if (currentScreen == 0 && tx > 250 && ty > 185) { finalizarClique(); drawConfigScreen(); return; }
+  if (currentScreen == 1) {
+    if (ty > 70 && ty < 105) { finalizarClique(); tecladoBuffer = ""; modoAlterarSenha = false; resetarCamposAjuste(); drawLoginScreen("INTRODUZA A SENHA", 0x1A5CFF); return; }
+    if (ty > 115 && ty < 150) { finalizarClique(); tecladoBuffer = ""; modoAlterarSenha = true; passoAlterarSenha = 0; drawLoginScreen("SENHA ATUAL?", 0xAD55); return; }
+    if (ty > 160 && ty < 195) { finalizarClique(); tft.fillScreen(TFT_BLACK); tft.drawCentreString("A iniciar portal...", 160, 120, 2); wm.startConfigPortal("SERVIMETRO_CONFIG"); drawConfigScreen(); return; }
+    if (ty > 205) { finalizarClique(); drawMainScreen(); return; }
+  }
+  if (currentScreen == 6) { 
+    if (ty > 210) { finalizarClique(); drawConfigScreen(); return; }
+    if (ty > 80 && ty < 210) {
+      int idx = ((ty-80)/35)*3 + (tx-60)/70;
+      if (idx >= 0 && idx < 12) {
+        String teclas[12] = {"1","2","3","4","5","6","7","8","9","CLR","0","OK"};
+        if (teclas[idx] == "CLR") { tecladoBuffer = ""; updateLoginDisplay(); }
+        else if (teclas[idx] == "OK") {
+          finalizarClique();
+          if (modoAlterarSenha) {
+            if (passoAlterarSenha == 0) {
+              if (tecladoBuffer == senhaMestra) { tecladoBuffer = ""; passoAlterarSenha = 1; drawLoginScreen("NOVA SENHA", 0xAD55); }
+              else { tft.fillRect(0,0,320,35,TFT_RED); tft.drawCentreString("ERRADA!", 160, 10, 2); delay(1000); tecladoBuffer = ""; drawLoginScreen("SENHA ATUAL?", 0xAD55); }
+            } else { if (tecladoBuffer.length() >= 4) { senhaMestra = tecladoBuffer; gravarDados(); drawConfigScreen(); } }
+          } else { if (tecladoBuffer == senhaMestra) drawAjusteScreen(); else drawConfigScreen(); }
+        } else { if(tecladoBuffer.length() < 8) { tecladoBuffer += teclas[idx]; updateLoginDisplay(); } delay(100); }
+      }
+    }
+  }
+  if (currentScreen == 3) {
+    if (tx < 120 && ty > 200) { finalizarClique(); resetarCamposAjuste(); drawConfigScreen(); return; }
+    if (tx > 160 && ty > 200) { int c = 0; for(int i=0; i<4; i++) if(y_temp[i] != VALOR_NULO) c++; if (c >= 2) { finalizarClique(); drawConfirmacaoAjuste(); } return; }
+    for(int i = 0; i < 4; i++) {
+      int yPos = 90 + (i * 26);
+      if (tx > 125 && ty > yPos && ty < yPos + 22) { pontoEmEdicao = i; tecladoBuffer = ""; finalizarClique(); drawTeclado(); return; }
+    }
+  }
+  if (currentScreen == 4) {
+    if (tx > 170 && ty > 200) { 
+      finalizarClique(); 
+      if (tecladoBuffer.length() > 0) { 
+        y_temp[pontoEmEdicao] = tecladoBuffer.toFloat(); 
+        x_temp[pontoEmEdicao] = tempBrutaGlobal; 
+      } 
+      drawAjusteScreen(); return; 
+    }
+    if (tx < 150 && ty > 200) { finalizarClique(); tecladoBuffer = ""; drawTeclado(); return; }
+    if (ty > 80 && ty < 200) {
+       int idx = ((ty-85)/28)*3 + (tx-60)/70;
+       if (idx >= 0 && idx < 12) {
+         String teclas[12] = {"1","2","3","4","5","6","7","8","9","-","0","."};
+         if (idx == 9) { if(tecladoBuffer.startsWith("-")) tecladoBuffer.remove(0,1); else tecladoBuffer = "-" + tecladoBuffer; }
+         else tecladoBuffer += teclas[idx];
+         tft.fillRect(82, 42, 156, 31, TFT_BLACK); tft.setTextColor(TFT_WHITE); tft.drawCentreString(tecladoBuffer, 160, 48, 4);
+         delay(100);
+       }
+    }
+  }
+  if (currentScreen == 5) { 
+    if (tx > 160 && ty > 190) { finalizarClique(); for(int i=0; i<4; i++) { x_lido[i] = x_temp[i]; y_real[i] = y_temp[i]; } gravarDados(); drawMainScreen(); } 
+    else if (tx < 150 && ty > 190) { finalizarClique(); drawAjusteScreen(); } 
+  }
+}
+
+void setup() {
+  Serial.begin(115200); delay(1000); pinMode(21, OUTPUT); digitalWrite(21, HIGH); carregarDados();
+  touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  touchscreen.begin(touchscreenSPI); touchscreen.setRotation(1);
+  tft.init(); tft.setRotation(1); thermo.begin(MAX31865_4WIRE);
+  WiFi.mode(WIFI_STA); WiFi.begin(); wm.setConfigPortalBlocking(false); 
+  drawMainScreen();
+}
+
+void loop() {
+  wm.process();
+  
+  if (millis() - lastUpdate > 500) {
+    somaLeituras += thermo.temperature(100.0, 400.0);
+    contadorLeituras++;
+
+    if (contadorLeituras >= 10) {
+      tempBrutaGlobal = somaLeituras / 10.0;
+      tempCorrigida = aplicarCorrecao(tempBrutaGlobal);
+      
+      if (currentScreen == 0) updateMainScreen();
+      if (currentScreen == 3) { 
+        tft.fillRect(175, 63, 100, 20, TFT_WHITE); 
+        tft.setTextColor(0x1A5CFF); tft.drawString(String(tempCorrigida, 2) + " C", 175, 65, 2); 
+      }
+      somaLeituras = 0; contadorLeituras = 0;
+    }
+    if (currentScreen == 0 || currentScreen == 1 || currentScreen == 3) drawHeader();
+    lastUpdate = millis();
+  }
+  
+  if (touchscreen.touched()) {
+    TS_Point p = touchscreen.getPoint();
+    handleTouch(map(p.x, 200, 3700, 1, 320), map(p.y, 240, 3800, 1, 240)); 
+  }
+}
