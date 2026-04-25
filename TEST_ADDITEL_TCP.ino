@@ -1,156 +1,101 @@
 /*
- * TEST_ADDITEL_TCP.ino
- * Ficheiro de teste APENAS para comunicação com Additel 875
+ * TEST_ADDITEL_ETHERNET.ino
+ * Teste de comunicação com Additel usando Ethernet (W5500)
  * 
- * Objetivo: Verificar se conseguimos conectar e enviar SCPI
- * Com WiFiManager para fácil configuração
+ * BASEADO NO CÓDIGO ORIGINAL QUE FUNCIONAVA!
  * 
- * IP Additel: 192.168.0.180
+ * IP Additel: 192.168.0.180 (CORRIGIDO)
  * Porta: 8000
- * Comando SCPI: SOURce:TEMPerature:TARGet 50,1001\r\n
  */
 
-#include <WiFi.h>
-#include <WiFiManager.h>
-#include <lwip/sockets.h>
+#include <SPI.h>
+#include <Ethernet.h>
 
-// Additel
-IPAddress ip_additel(192, 168, 0, 180);
-const uint16_t porta_additel = 8000;
+// Pino de Chip Select para a W5500
+#define W5500_CS 27
 
-// Status
-bool wifiConectado = false;
-bool additelConectado = false;
+// Configurações de Rede
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress ip_esp(192, 168, 0, 201);      
+IPAddress ip_additel(192, 168, 0, 180);  // CORRIGIDO: 180 em vez de 182
+
+EthernetClient client;
+
+// Variáveis para o temporizador de 30 segundos
+unsigned long ultimaExecucao = 0;
+const unsigned long intervalo = 30000;
+
+void lerResposta(String prefixo) {
+  delay(500); 
+  if (client.available()) {
+    Serial.print(prefixo);
+    while (client.available()) {
+      char c = client.read();
+      Serial.print(c);
+    }
+    Serial.println();
+  }
+}
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
+
+  Ethernet.init(W5500_CS);
+  Serial.println("\n=== TEST ADDITEL ETHERNET ===\n");
+  Serial.println("Inicializando Ethernet...");
+  Ethernet.begin(mac, ip_esp);
   
-  Serial.println("\n\n=== TEST ADDITEL TCP ===\n");
-  Serial.println("Iniciando WiFiManager...");
-  
-  WiFiManager wm;
-  
-  // Modo AP para configuração
-  bool res = wm.autoConnect("SERVIMETRO_CONFIG", "12345678");
-  
-  if(!res) {
-    Serial.println("❌ WiFi failed to connect");
-    ESP.restart();
+  delay(2000); 
+  Serial.print("✅ IP do ESP32: ");
+  Serial.println(Ethernet.localIP());
+  Serial.print("Tentando conectar a Additel: ");
+  Serial.print(ip_additel);
+  Serial.println(":8000");
+
+  // --- ENVIO DO SETPOINT (APENAS UMA VEZ NO ARRANQUE) ---
+  enviarSetpointUmaVez();
+}
+
+void enviarSetpointUmaVez() {
+  Serial.println("\n--- Configurando Setpoint Inicial ---");
+  if (client.connect(ip_additel, 8000)) {
+    Serial.println("✅ Conectado ao Additel!");
+    Serial.println("Enviando Setpoint 50°C...");
+    client.print("SOURce:TEMPerature:TARGet 50,1001\r\n");
+    delay(200);
+    lerResposta("Resposta: ");
+    client.stop();
+    Serial.println("✅ Setpoint configurado com sucesso.");
   } else {
-    Serial.println("✅ WiFi CONECTADO!");
-    Serial.print("SSID: ");
-    Serial.println(WiFi.SSID());
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    wifiConectado = true;
+    Serial.println("❌ ERRO: Nao foi possivel conectar ao Additel.");
+    Serial.println("Possíveis causas:");
+    Serial.println("- Additel offline");
+    Serial.println("- IP incorreto (192.168.0.180)");
+    Serial.println("- Porta bloqueada (8000)");
+    Serial.println("- W5500 nao esta funcionando");
   }
-  
-  Serial.println("\nAguardando 2 segundos antes de tentar Additel...");
-  delay(2000);
 }
 
 void loop() {
-  if (!wifiConectado) {
-    Serial.println("WiFi não está conectado. Abortando.");
-    delay(5000);
-    return;
+  // Verifica se passaram 30 segundos para pedir a medição
+  if (millis() - ultimaExecucao >= intervalo) {
+    solicitarMedicao();
+    ultimaExecucao = millis(); 
   }
-  
-  Serial.println("\n=== TENTATIVA DE CONEXÃO ===\n");
-  
-  // Criar socket
-  Serial.println("1. Criando socket TCP...");
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) {
-    Serial.println("❌ Erro ao criar socket");
-    delay(5000);
-    return;
-  }
-  Serial.println("   ✅ Socket criado");
-  
-  // Configurar timeouts
-  Serial.println("2. Configurando timeouts...");
-  struct timeval tv;
-  tv.tv_sec = 10;  // 10 segundos
-  tv.tv_usec = 0;
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-  Serial.println("   ✅ Timeouts configurados (10s)");
-  
-  // Preparar endereço
-  Serial.println("3. Preparando endereço...");
-  struct sockaddr_in servaddr;
-  memset(&servaddr, 0, sizeof(servaddr));
-  servaddr.sin_family = AF_INET;
-  servaddr.sin_port = htons(porta_additel);
-  servaddr.sin_addr.s_addr = ip_additel;
-  Serial.print("   Servidor: ");
-  Serial.print(ip_additel);
-  Serial.print(":");
-  Serial.println(porta_additel);
-  
-  // Conectar
-  Serial.println("4. Conectando ao Additel...");
-  int resultado = connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr));
-  
-  if (resultado < 0) {
-    Serial.print("❌ FALHA! Erro: ");
-    Serial.println(resultado);
-    Serial.println("\nPossíveis causas:");
-    Serial.println("- Additel offline");
-    Serial.println("- IP incorreto (192.168.0.180)");
-    Serial.println("- Porta bloqueada por firewall");
-    Serial.println("- Additel não aceita TCP na porta 8000");
-    Serial.println("- Additel espera comunicação diferente (UDP, etc)");
-    close(sock);
-    Serial.println("\nTentando novamente em 10 segundos...\n");
-    delay(10000);
-    return;
-  }
-  
-  Serial.println("   ✅ CONECTADO AO ADDITEL!");
-  additelConectado = true;
-  
-  // Enviar comando SCPI
-  Serial.println("5. Enviando comando SCPI...");
-  const char* comando = "SOURce:TEMPerature:TARGet 50,1001\r\n";
-  Serial.print("   Comando: ");
-  Serial.println(comando);
-  
-  int sent = send(sock, (const char*)comando, strlen(comando), 0);
-  
-  if (sent < 0) {
-    Serial.print("❌ Erro ao enviar: ");
-    Serial.println(sent);
+}
+
+void solicitarMedicao() {
+  Serial.println("\n--- Lendo Medicao Atual (a cada 30s) ---");
+  if (client.connect(ip_additel, 8000)) {
+    Serial.println("✅ Conectado ao Additel");
+    // Comando para leitura
+    client.print("MEASure:SCALar:CONTrol?\r\n");
+    
+    lerResposta("Valor medido no Additel: ");
+
+    client.stop();
   } else {
-    Serial.print("   ✅ Enviados ");
-    Serial.print(sent);
-    Serial.println(" bytes");
+    Serial.println("❌ FALHA: Conexao perdida para leitura.");
   }
-  
-  // Aguardar resposta
-  Serial.println("6. Aguardando resposta (até 10s)...");
-  char buffer[512];
-  int bytes = recv(sock, (unsigned char*)buffer, sizeof(buffer) - 1, 0);
-  
-  if (bytes > 0) {
-    buffer[bytes] = '\0';
-    Serial.print("   ✅ Resposta recebida (");
-    Serial.print(bytes);
-    Serial.println(" bytes):");
-    Serial.print("   ");
-    Serial.println(buffer);
-  } else if (bytes == 0) {
-    Serial.println("   ⚠️ Conexão fechada pelo Additel (sem resposta)");
-  } else {
-    Serial.println("   ⚠️ Timeout ao receber resposta");
-  }
-  
-  // Fechar
-  close(sock);
-  Serial.println("\n✅ Socket fechado");
-  
-  Serial.println("\n=== AGUARDANDO 10 SEGUNDOS PARA PRÓXIMA TENTATIVA ===\n");
-  delay(10000);
 }
