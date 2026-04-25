@@ -10,20 +10,6 @@
 #include <DNSServer.h>
 #include <WiFiManager.h> 
 
-// ========== ETHERNET (ADICIONADO) ==========
-#include <Ethernet.h>
-byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip_esp(192, 168, 0, 201);      
-IPAddress ip_additel(192, 168, 0, 182);  
-IPAddress gateway(192, 168, 0, 1);
-IPAddress subnet(255, 255, 255, 0);
-EthernetClient client;
-SPIClass ethernetSPI = SPIClass(HSPI);
-unsigned long ultimaExecucao = 0;
-const unsigned long intervalo = 30000;
-bool ethernetConectado = false;
-// =============================================
-
 TFT_eSPI tft = TFT_eSPI();
 Preferences prefs;
 
@@ -36,8 +22,6 @@ String senhaMestra = "1998";
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
 #define XPT2046_CLK 25
-#define W5500_CS 27
-
 SPIClass touchscreenSPI = SPIClass(VSPI);
 XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 Adafruit_MAX31865 thermo = Adafruit_MAX31865(4, 23, 19, 18);
@@ -61,47 +45,6 @@ bool modoAlterarSenha = false;
 int passoAlterarSenha = 0; 
 
 WiFiManager wm;
-
-// ========== FUNÇÕES ETHERNET (ADICIONADAS) ==========
-void inicializarEthernet() {
-  Serial.println("\n--- Inicializando Ethernet W5500 ---");
-  ethernetSPI.begin(18, 19, 23, W5500_CS);
-  Ethernet.init(W5500_CS);
-  Ethernet.begin(mac, ip_esp, gateway, gateway, subnet);
-  delay(2000);
-  
-  if (Ethernet.linkStatus() == LinkON) {
-    ethernetConectado = true;
-    Serial.print("✅ Ethernet OK. IP: ");
-    Serial.println(Ethernet.localIP());
-  } else {
-    Serial.println("❌ Ethernet desconectado (cabo ou W5500)");
-  }
-}
-
-void enviarSetpointAoAdditel(float setpoint) {
-  if (client.connect(ip_additel, 8000)) {
-    String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
-    client.print(comando);
-    Serial.println("✅ Setpoint enviado: " + comando);
-    delay(200);
-    client.stop();
-  }
-}
-
-void lerStatusAdditel() {
-  if (client.connect(ip_additel, 8000)) {
-    client.print("MEASure:SCALar:CONTrol?\r\n");
-    delay(500);
-    if (client.available()) {
-      String resposta = "";
-      while (client.available()) resposta += (char)client.read();
-      Serial.println("Status Additel: " + resposta);
-    }
-    client.stop();
-  }
-}
-// ==================================================
 
 // --- FUNÇÕES DE CORREÇÃO E MEMÓRIA ---
 float aplicarCorrecao(float x) {
@@ -156,12 +99,7 @@ void drawWiFiSignal(int x, int y) {
 void drawHeader() {
   tft.fillRect(0, 0, 320, 40, 0x1A5CFF); 
   tft.setTextColor(TFT_WHITE); tft.drawString("SERVIMETRO", 10, 12, 2);
-  
-  if (ethernetConectado) {
-    tft.fillCircle(250, 20, 5, TFT_GREEN);
-    tft.setTextDatum(TR_DATUM); 
-    tft.drawString("ETH", 245, 12, 1);
-  } else if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED) {
     tft.fillCircle(305, 20, 5, TFT_GREEN);
     drawWiFiSignal(265, 12);
     tft.setTextDatum(TR_DATUM); tft.drawString(WiFi.SSID().substring(0, 10), 255, 12, 1);
@@ -313,7 +251,14 @@ void handleTouch(int tx, int ty) {
     }
   }
   if (currentScreen == 4) {
-    if (tx > 170 && ty > 200) { finalizarClique(); if (tecladoBuffer.length() > 0) { y_temp[pontoEmEdicao] = tecladoBuffer.toFloat(); x_temp[pontoEmEdicao] = tempBrutaGlobal; } drawAjusteScreen(); return; }
+    if (tx > 170 && ty > 200) { 
+      finalizarClique(); 
+      if (tecladoBuffer.length() > 0) { 
+        y_temp[pontoEmEdicao] = tecladoBuffer.toFloat(); 
+        x_temp[pontoEmEdicao] = tempBrutaGlobal; 
+      } 
+      drawAjusteScreen(); return; 
+    }
     if (tx < 150 && ty > 200) { finalizarClique(); tecladoBuffer = ""; drawTeclado(); return; }
     if (ty > 80 && ty < 200) {
        int idx = ((ty-85)/28)*3 + (tx-60)/70;
@@ -338,17 +283,11 @@ void setup() {
   touchscreen.begin(touchscreenSPI); touchscreen.setRotation(1);
   tft.init(); tft.setRotation(1); thermo.begin(MAX31865_4WIRE);
   WiFi.mode(WIFI_STA); WiFi.begin(); wm.setConfigPortalBlocking(false); 
-  
-  // Inicializar Ethernet (ADICIONADO)
-  inicializarEthernet();
-  
   drawMainScreen();
-  Serial.println("✅ Sistema iniciado!");
 }
 
 void loop() {
   wm.process();
-  Ethernet.maintain();
   
   if (millis() - lastUpdate > 500) {
     somaLeituras += thermo.temperature(100.0, 400.0);
@@ -367,12 +306,6 @@ void loop() {
     }
     if (currentScreen == 0 || currentScreen == 1 || currentScreen == 3) drawHeader();
     lastUpdate = millis();
-  }
-  
-  // Leitura Periodica Additel (a cada 30 seg)
-  if (ethernetConectado && (millis() - ultimaExecucao >= intervalo)) {
-    lerStatusAdditel();
-    ultimaExecucao = millis();
   }
   
   if (touchscreen.touched()) {
