@@ -29,15 +29,14 @@ SPIClass touchscreenSPI = SPIClass(VSPI);
 XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 Adafruit_MAX31865 thermo = Adafruit_MAX31865(4, 23, 19, 18);
 
-// ========== ETHERNET W5500 ==========
+// ========== ETHERNET W5500 (ON-DEMAND) ==========
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
 IPAddress ip_esp(192, 168, 0, 201);      
-IPAddress ip_additel(192, 168, 0, 182);  // CORRIGIDO: 182
+IPAddress ip_additel(192, 168, 0, 182);  
 EthernetClient client;
-unsigned long ultimaExecucao = 0;
-const unsigned long intervalo = 30000;
-bool ethernetConectado = false;
-TaskHandle_t taskEthernet = NULL;
+unsigned long ultimaExecucaoEthernet = 0;
+const unsigned long intervaloEthernet = 30000;  // 30 segundos
+bool ethernetLigado = false;
 // ====================================
 
 float x_lido[4] = {0, 0, 0, 0}; 
@@ -60,52 +59,83 @@ int passoAlterarSenha = 0;
 
 WiFiManager wm;
 
-// ========== TASK ETHERNET (NÃO BLOQUEIA SPI) ==========
-void taskEthernetLoop(void *parameter) {
-  Serial.println("\n--- Inicializando Ethernet em background ---");
+// ========== FUNÇÕES ETHERNET (LIGAR/DESLIGAR) ==========
+void ligarEthernet() {
+  if (ethernetLigado) return;  // Já está ligado
+  
+  Serial.println("\n--- Ligando Ethernet ---");
   
   Ethernet.init(W5500_CS);
   Ethernet.begin(mac, ip_esp);
   
-  delay(2000);
+  delay(1000);
   
-  Serial.print("✅ Ethernet IP: ");
+  Serial.print("✅ Ethernet ligada. IP: ");
   Serial.println(Ethernet.localIP());
   
-  // Enviar setpoint inicial
+  ethernetLigado = true;
+}
+
+void desligarEthernet() {
+  if (!ethernetLigado) return;  // Já está desligada
+  
+  Serial.println("--- Desligando Ethernet ---");
+  
+  client.stop();
+  Ethernet.end();
+  
+  Serial.println("✅ Ethernet desligada");
+  
+  ethernetLigado = false;
+}
+
+void enviarSetpoint(float setpoint) {
+  Serial.print("\n=== ENVIANDO SETPOINT (");
+  Serial.print(setpoint);
+  Serial.println("°C) ===");
+  
+  if (!ethernetLigado) ligarEthernet();
+  
   if (client.connect(ip_additel, 8000)) {
-    Serial.println("✅ Conectado ao Additel!");
-    client.print("SOURce:TEMPerature:TARGet 50,1001\r\n");
+    Serial.println("✅ Conectado ao Additel");
+    
+    String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
+    client.print(comando);
+    Serial.print("✅ Enviado: ");
+    Serial.println(comando);
+    
     delay(200);
     client.stop();
-    Serial.println("✅ Setpoint 50°C enviado!");
-    ethernetConectado = true;
   } else {
     Serial.println("❌ Falha ao conectar ao Additel");
   }
+}
+
+void lerStatusAdditel() {
+  Serial.println("\n=== LENDO STATUS ADDITEL ===");
   
-  // Loop infinito na task
-  unsigned long ultimaLeitura = 0;
-  while(1) {
-    vTaskDelay(100 / portTICK_PERIOD_MS);  // Não bloqueia
+  if (!ethernetLigado) ligarEthernet();
+  
+  if (client.connect(ip_additel, 8000)) {
+    Serial.println("✅ Conectado ao Additel");
     
-    // Leitura periódica (30 segundos)
-    if (millis() - ultimaLeitura >= intervalo) {
-      if (client.connect(ip_additel, 8000)) {
-        client.print("MEASure:SCALar:CONTrol?\r\n");
-        delay(200);
-        if (client.available()) {
-          String resposta = "";
-          while (client.available()) {
-            resposta += (char)client.read();
-          }
-          Serial.print("Status Additel: ");
-          Serial.println(resposta);
-        }
-        client.stop();
+    client.print("MEASure:SCALar:CONTrol?\r\n");
+    delay(500);
+    
+    if (client.available()) {
+      String resposta = "";
+      while (client.available()) {
+        resposta += (char)client.read();
       }
-      ultimaLeitura = millis();
+      Serial.print("Status: ");
+      Serial.println(resposta);
+    } else {
+      Serial.println("⚠️ Sem resposta");
     }
+    
+    client.stop();
+  } else {
+    Serial.println("❌ Falha ao conectar");
   }
 }
 // ================================================
@@ -164,7 +194,7 @@ void drawHeader() {
   tft.fillRect(0, 0, 320, 40, 0x1A5CFF); 
   tft.setTextColor(TFT_WHITE); tft.drawString("SERVIMETRO", 10, 12, 2);
   
-  if (ethernetConectado) {
+  if (ethernetLigado) {
     tft.fillCircle(250, 20, 5, TFT_GREEN);
     tft.setTextDatum(TR_DATUM); 
     tft.drawString("ETH", 245, 12, 1);
@@ -361,19 +391,13 @@ void setup() {
   WiFi.begin(); 
   wm.setConfigPortalBlocking(false); 
   
-  // Criar task para Ethernet (não bloqueia)
-  xTaskCreatePinnedToCore(
-    taskEthernetLoop,
-    "Ethernet",
-    8192,
-    NULL,
-    1,
-    &taskEthernet,
-    0
-  );
-  
   drawMainScreen();
   Serial.println("✅ Sistema iniciado!");
+  
+  // Enviar setpoint inicial quando tiver Ethernet
+  delay(2000);
+  enviarSetpoint(50);
+  desligarEthernet();  // Desligar para não interferir
 }
 
 void loop() {
@@ -398,6 +422,13 @@ void loop() {
     }
     if (currentScreen == 0 || currentScreen == 1 || currentScreen == 3) drawHeader();
     lastUpdate = millis();
+  }
+  
+  // Leitura do Additel a cada 30 segundos (ON-DEMAND)
+  if (millis() - ultimaExecucaoEthernet >= intervaloEthernet) {
+    lerStatusAdditel();
+    desligarEthernet();  // Desligar após comunicação
+    ultimaExecucaoEthernet = millis();
   }
   
   if (touchscreen.touched()) {
