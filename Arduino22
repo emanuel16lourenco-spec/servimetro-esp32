@@ -65,50 +65,75 @@ int passoAlterarSenha = 0;
 WiFiManager wm;
 
 // ========================================================
-// FUNÇÕES ETHERNET (ADICIONADAS)
+// FUNÇÕES ETHERNET (ADICIONADAS COM DEBUG)
 // ========================================================
 
 void inicializarEthernet() {
-  Serial.println("\n--- Inicializando Ethernet W5500 ---");
+  Serial.println("\n=== INICIALIZANDO ETHERNET W5500 ===");
   
-  // Configurar HSPI para Ethernet (pinos: CLK=18, MISO=19, MOSI=23)
+  Serial.print("1. Configurando HSPI...");
   ethernetSPI.begin(18, 19, 23, W5500_CS);
+  Serial.println(" OK");
+  
+  Serial.print("2. Inicializando Ethernet.init(CS=27)...");
   Ethernet.init(W5500_CS);
+  Serial.println(" OK");
   
-  // Iniciar com IP estático
+  Serial.print("3. Iniciando DHCP/IP estático...");
   Ethernet.begin(mac, ip_esp, gateway, gateway, subnet);
+  Serial.println(" OK");
   
+  Serial.print("4. Aguardando 2 segundos...");
   delay(2000);
+  Serial.println(" OK");
   
-  if (Ethernet.linkStatus() == LinkON) {
+  Serial.print("5. Verificando LinkStatus...");
+  int linkStatus = Ethernet.linkStatus();
+  Serial.print(" Status=");
+  Serial.println(linkStatus);
+  
+  if (linkStatus == LinkON) {
     ethernetConectado = true;
-    Serial.print("✅ Ethernet conectado. IP: ");
+    Serial.print("✅ SUCESSO! IP: ");
     Serial.println(Ethernet.localIP());
+    
+    Serial.print("6. Enviando setpoint inicial...");
     enviarSetpointAoAdditel(50);
+    Serial.println(" OK");
   } else {
     ethernetConectado = false;
-    Serial.println("❌ Ethernet desconectado.");
+    Serial.println("❌ FALHA: Cabo Ethernet desconectado ou W5500 não responde");
   }
 }
 
 void enviarSetpointAoAdditel(float setpoint) {
-  Serial.println("\n--- Enviando Setpoint ao Additel ---");
+  Serial.print("\n--- Enviando Setpoint (");
+  Serial.print(setpoint);
+  Serial.print("°C) ---\n");
+  
+  Serial.print("Conectando a ");
+  Serial.print(ip_additel);
+  Serial.print(":8000...");
   
   if (client.connect(ip_additel, 8000)) {
+    Serial.println(" ✅ CONECTADO");
     String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
     client.print(comando);
-    Serial.println("✅ Setpoint enviado: " + comando);
+    Serial.print("Enviado: ");
+    Serial.println(comando);
     delay(200);
     client.stop();
   } else {
-    Serial.println("❌ Erro ao conectar ao Additel");
+    Serial.println(" ❌ ERRO AO CONECTAR");
   }
 }
 
 void lerStatusAdditel() {
-  Serial.println("\n--- Lendo Status do Additel ---");
+  Serial.print("\n--- Lendo Status do Additel ---\n");
   
+  Serial.print("Conectando...");
   if (client.connect(ip_additel, 8000)) {
+    Serial.println(" ✅");
     client.print("MEASure:SCALar:CONTrol?\r\n");
     delay(500);
     
@@ -118,12 +143,14 @@ void lerStatusAdditel() {
         char c = client.read();
         resposta += c;
       }
-      Serial.println("✅ Resposta: " + resposta);
+      Serial.print("Resposta: ");
+      Serial.println(resposta);
+    } else {
+      Serial.println("Sem resposta do Additel");
     }
-    
     client.stop();
   } else {
-    Serial.println("❌ Falha ao conectar");
+    Serial.println(" ❌ FALHA");
   }
 }
 
@@ -363,33 +390,46 @@ void handleTouch(int tx, int ty) {
 void setup() {
   Serial.begin(115200); 
   delay(1000); 
+  
+  Serial.println("\n\n=== BOOT DO SISTEMA ===\n");
+  
   pinMode(21, OUTPUT); 
   digitalWrite(21, HIGH); 
-  carregarDados();
   
-  // Inicializar VSPI para touchscreen (MANTIDO DO ARDUINO21)
+  Serial.println("1. Carregando dados da EEPROM...");
+  carregarDados();
+  Serial.println("   ✅ OK\n");
+  
+  Serial.println("2. Inicializando Touchscreen (VSPI)...");
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   touchscreen.begin(touchscreenSPI); 
   touchscreen.setRotation(1);
+  Serial.println("   ✅ OK\n");
   
-  // Inicializar TFT (MANTIDO DO ARDUINO21)
+  Serial.println("3. Inicializando TFT Display...");
   tft.init(); 
   tft.setRotation(1); 
+  Serial.println("   ✅ OK\n");
   
-  // Inicializar MAX31865 (MANTIDO DO ARDUINO21)
+  Serial.println("4. Inicializando MAX31865 (PT100)...");
   thermo.begin(MAX31865_4WIRE);
+  Serial.println("   ✅ OK\n");
   
-  // Inicializar WiFi (MANTIDO DO ARDUINO21)
+  Serial.println("5. Inicializando WiFi...");
   WiFi.mode(WIFI_STA); 
   WiFi.begin(); 
   wm.setConfigPortalBlocking(false); 
+  Serial.println("   ✅ OK\n");
   
-  // Inicializar Ethernet (ADICIONADO)
+  Serial.println("6. Inicializando Ethernet W5500...");
   inicializarEthernet();
+  Serial.println("   ✅ OK\n");
   
+  Serial.println("7. Mostrando menu principal...");
   drawMainScreen();
+  Serial.println("   ✅ OK\n");
   
-  Serial.println("✅ Sistema iniciado com sucesso!");
+  Serial.println("✅ Sistema iniciado com sucesso!\n");
 }
 
 void loop() {
@@ -431,5 +471,4 @@ void loop() {
 }
 
 // ========================================================
-// FIM - Arduino21 PURO + Ethernet HSPI
-// ========================================================
+// FIM - Arduino21 PURO + Ethernet HSPI (com DEBUG)
