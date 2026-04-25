@@ -9,7 +9,20 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <WiFiManager.h> 
+
+// ========== ETHERNET (ADICIONADO) ==========
 #include <Ethernet.h>
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress ip_esp(192, 168, 0, 201);      
+IPAddress ip_additel(192, 168, 0, 182);  
+IPAddress gateway(192, 168, 0, 1);
+IPAddress subnet(255, 255, 255, 0);
+EthernetClient client;
+SPIClass ethernetSPI = SPIClass(HSPI);
+unsigned long ultimaExecucao = 0;
+const unsigned long intervalo = 30000;
+bool ethernetConectado = false;
+// =============================================
 
 TFT_eSPI tft = TFT_eSPI();
 Preferences prefs;
@@ -17,32 +30,17 @@ Preferences prefs;
 #define VALOR_NULO -999.0  
 String senhaMestra = "1998"; 
 
-// --- PINOS TOUCH E SENSOR (MANTIDO DO ARDUINO21) ---
+// --- PINOS TOUCH E SENSOR ---
 #define XPT2046_CS 33
 #define XPT2046_IRQ 36
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
 #define XPT2046_CLK 25
-
-// --- PINO W5500 (ADICIONADO) ---
 #define W5500_CS 27
 
 SPIClass touchscreenSPI = SPIClass(VSPI);
 XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 Adafruit_MAX31865 thermo = Adafruit_MAX31865(4, 23, 19, 18);
-
-// --- ETHERNET W5500 (ADICIONADO) ---
-byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip_esp(192, 168, 0, 201);      
-IPAddress ip_additel(192, 168, 0, 182);  
-IPAddress gateway(192, 168, 0, 1);
-IPAddress subnet(255, 255, 255, 0);
-
-EthernetClient client;
-SPIClass ethernetSPI = SPIClass(HSPI);
-unsigned long ultimaExecucao = 0;
-const unsigned long intervalo = 30000;
-bool ethernetConectado = false;
 
 float x_lido[4] = {0, 0, 0, 0}; 
 float y_real[4] = {VALOR_NULO, VALOR_NULO, VALOR_NULO, VALOR_NULO}; 
@@ -64,97 +62,48 @@ int passoAlterarSenha = 0;
 
 WiFiManager wm;
 
-// ========================================================
-// FUNÇÕES ETHERNET (ADICIONADAS COM DEBUG)
-// ========================================================
-
+// ========== FUNÇÕES ETHERNET (ADICIONADAS) ==========
 void inicializarEthernet() {
-  Serial.println("\n=== INICIALIZANDO ETHERNET W5500 ===");
-  
-  Serial.print("1. Configurando HSPI...");
+  Serial.println("\n--- Inicializando Ethernet W5500 ---");
   ethernetSPI.begin(18, 19, 23, W5500_CS);
-  Serial.println(" OK");
-  
-  Serial.print("2. Inicializando Ethernet.init(CS=27)...");
   Ethernet.init(W5500_CS);
-  Serial.println(" OK");
-  
-  Serial.print("3. Iniciando DHCP/IP estático...");
   Ethernet.begin(mac, ip_esp, gateway, gateway, subnet);
-  Serial.println(" OK");
-  
-  Serial.print("4. Aguardando 2 segundos...");
   delay(2000);
-  Serial.println(" OK");
   
-  Serial.print("5. Verificando LinkStatus...");
-  int linkStatus = Ethernet.linkStatus();
-  Serial.print(" Status=");
-  Serial.println(linkStatus);
-  
-  if (linkStatus == LinkON) {
+  if (Ethernet.linkStatus() == LinkON) {
     ethernetConectado = true;
-    Serial.print("✅ SUCESSO! IP: ");
+    Serial.print("✅ Ethernet OK. IP: ");
     Serial.println(Ethernet.localIP());
-    
-    Serial.print("6. Enviando setpoint inicial...");
-    enviarSetpointAoAdditel(50);
-    Serial.println(" OK");
   } else {
-    ethernetConectado = false;
-    Serial.println("❌ FALHA: Cabo Ethernet desconectado ou W5500 não responde");
+    Serial.println("❌ Ethernet desconectado (cabo ou W5500)");
   }
 }
 
 void enviarSetpointAoAdditel(float setpoint) {
-  Serial.print("\n--- Enviando Setpoint (");
-  Serial.print(setpoint);
-  Serial.print("°C) ---\n");
-  
-  Serial.print("Conectando a ");
-  Serial.print(ip_additel);
-  Serial.print(":8000...");
-  
   if (client.connect(ip_additel, 8000)) {
-    Serial.println(" ✅ CONECTADO");
     String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
     client.print(comando);
-    Serial.print("Enviado: ");
-    Serial.println(comando);
+    Serial.println("✅ Setpoint enviado: " + comando);
     delay(200);
     client.stop();
-  } else {
-    Serial.println(" ❌ ERRO AO CONECTAR");
   }
 }
 
 void lerStatusAdditel() {
-  Serial.print("\n--- Lendo Status do Additel ---\n");
-  
-  Serial.print("Conectando...");
   if (client.connect(ip_additel, 8000)) {
-    Serial.println(" ✅");
     client.print("MEASure:SCALar:CONTrol?\r\n");
     delay(500);
-    
     if (client.available()) {
       String resposta = "";
-      while (client.available()) {
-        char c = client.read();
-        resposta += c;
-      }
-      Serial.print("Resposta: ");
-      Serial.println(resposta);
-    } else {
-      Serial.println("Sem resposta do Additel");
+      while (client.available()) resposta += (char)client.read();
+      Serial.println("Status Additel: " + resposta);
     }
     client.stop();
-  } else {
-    Serial.println(" ❌ FALHA");
   }
 }
+// ==================================================
 
-// --- FUNÇÕES DE CORREÇÃO E MEMÓRIA (MANTIDAS DO ARDUINO21) ---
+// --- FUNÇÕES DE CORREÇÃO E MEMÓRIA ---
 float aplicarCorrecao(float x) {
   int n = 0, indices[4];
   for (int i = 0; i < 4; i++) if (y_real[i] != VALOR_NULO) indices[n++] = i;
@@ -195,7 +144,7 @@ void finalizarClique() {
   delay(150); 
 }
 
-// --- INTERFACE GRÁFICA (MANTIDA DO ARDUINO21) ---
+// --- INTERFACE GRÁFICA ---
 void drawWiFiSignal(int x, int y) {
   int32_t dbm = WiFi.RSSI();
   int bars = (WiFi.status() == WL_CONNECTED) ? (dbm > -50 ? 4 : (dbm > -65 ? 3 : (dbm > -75 ? 2 : (dbm > -85 ? 1 : 0)))) : 0;
@@ -206,10 +155,8 @@ void drawWiFiSignal(int x, int y) {
 
 void drawHeader() {
   tft.fillRect(0, 0, 320, 40, 0x1A5CFF); 
-  tft.setTextColor(TFT_WHITE); 
-  tft.drawString("SERVIMETRO", 10, 12, 2);
+  tft.setTextColor(TFT_WHITE); tft.drawString("SERVIMETRO", 10, 12, 2);
   
-  // Mostrar status Ethernet ou WiFi
   if (ethernetConectado) {
     tft.fillCircle(250, 20, 5, TFT_GREEN);
     tft.setTextDatum(TR_DATUM); 
@@ -217,12 +164,10 @@ void drawHeader() {
   } else if (WiFi.status() == WL_CONNECTED) {
     tft.fillCircle(305, 20, 5, TFT_GREEN);
     drawWiFiSignal(265, 12);
-    tft.setTextDatum(TR_DATUM); 
-    tft.drawString(WiFi.SSID().substring(0, 10), 255, 12, 1);
+    tft.setTextDatum(TR_DATUM); tft.drawString(WiFi.SSID().substring(0, 10), 255, 12, 1);
   } else {
     tft.fillCircle(305, 20, 5, TFT_RED);
-    tft.setTextDatum(TR_DATUM); 
-    tft.drawString("OFFLINE", 290, 12, 1);
+    tft.setTextDatum(TR_DATUM); tft.drawString("OFFLINE", 290, 12, 1);
   }
   tft.setTextDatum(TL_DATUM);
 }
@@ -388,48 +333,17 @@ void handleTouch(int tx, int ty) {
 }
 
 void setup() {
-  Serial.begin(115200); 
-  delay(1000); 
-  
-  Serial.println("\n\n=== BOOT DO SISTEMA ===\n");
-  
-  pinMode(21, OUTPUT); 
-  digitalWrite(21, HIGH); 
-  
-  Serial.println("1. Carregando dados da EEPROM...");
-  carregarDados();
-  Serial.println("   ✅ OK\n");
-  
-  Serial.println("2. Inicializando Touchscreen (VSPI)...");
+  Serial.begin(115200); delay(1000); pinMode(21, OUTPUT); digitalWrite(21, HIGH); carregarDados();
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-  touchscreen.begin(touchscreenSPI); 
-  touchscreen.setRotation(1);
-  Serial.println("   ✅ OK\n");
+  touchscreen.begin(touchscreenSPI); touchscreen.setRotation(1);
+  tft.init(); tft.setRotation(1); thermo.begin(MAX31865_4WIRE);
+  WiFi.mode(WIFI_STA); WiFi.begin(); wm.setConfigPortalBlocking(false); 
   
-  Serial.println("3. Inicializando TFT Display...");
-  tft.init(); 
-  tft.setRotation(1); 
-  Serial.println("   ✅ OK\n");
-  
-  Serial.println("4. Inicializando MAX31865 (PT100)...");
-  thermo.begin(MAX31865_4WIRE);
-  Serial.println("   ✅ OK\n");
-  
-  Serial.println("5. Inicializando WiFi...");
-  WiFi.mode(WIFI_STA); 
-  WiFi.begin(); 
-  wm.setConfigPortalBlocking(false); 
-  Serial.println("   ✅ OK\n");
-  
-  Serial.println("6. Inicializando Ethernet W5500...");
+  // Inicializar Ethernet (ADICIONADO)
   inicializarEthernet();
-  Serial.println("   ✅ OK\n");
   
-  Serial.println("7. Mostrando menu principal...");
   drawMainScreen();
-  Serial.println("   ✅ OK\n");
-  
-  Serial.println("✅ Sistema iniciado com sucesso!\n");
+  Serial.println("✅ Sistema iniciado!");
 }
 
 void loop() {
@@ -447,28 +361,22 @@ void loop() {
       if (currentScreen == 0) updateMainScreen();
       if (currentScreen == 3) { 
         tft.fillRect(175, 63, 100, 20, TFT_WHITE); 
-        tft.setTextColor(0x1A5CFF); 
-        tft.drawString(String(tempCorrigida, 2) + " C", 175, 65, 2); 
+        tft.setTextColor(0x1A5CFF); tft.drawString(String(tempCorrigida, 2) + " C", 175, 65, 2); 
       }
-      somaLeituras = 0; 
-      contadorLeituras = 0;
+      somaLeituras = 0; contadorLeituras = 0;
     }
     if (currentScreen == 0 || currentScreen == 1 || currentScreen == 3) drawHeader();
     lastUpdate = millis();
   }
   
-  // Leitura Periodica do Additel
+  // Leitura Periodica Additel (a cada 30 seg)
   if (ethernetConectado && (millis() - ultimaExecucao >= intervalo)) {
     lerStatusAdditel();
     ultimaExecucao = millis();
   }
   
-  // Processamento Touch (MANTIDO DO ARDUINO21)
   if (touchscreen.touched()) {
     TS_Point p = touchscreen.getPoint();
     handleTouch(map(p.x, 200, 3700, 1, 320), map(p.y, 240, 3800, 1, 240)); 
   }
 }
-
-// ========================================================
-// FIM - Arduino21 PURO + Ethernet HSPI (com DEBUG)
