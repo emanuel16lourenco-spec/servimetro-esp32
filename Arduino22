@@ -17,25 +17,21 @@ Preferences prefs;
 #define VALOR_NULO -999.0  
 String senhaMestra = "1998"; 
 
-// --- PINOS TOUCH E SENSOR ---
+// --- PINOS TOUCH E SENSOR (MANTIDO DO ARDUINO21) ---
 #define XPT2046_CS 33
 #define XPT2046_IRQ 36
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
 #define XPT2046_CLK 25
-#define MAX31865_CS 4
+
+// --- PINO W5500 (ADICIONADO) ---
 #define W5500_CS 27
 
-// --- SPI SEPARADAS PARA EVITAR CONFLITOS ---
-SPIClass touchscreenSPI = SPIClass(VSPI);  // Touchscreen usa VSPI
-SPIClass ethernetSPI = SPIClass(HSPI);     // W5500 usa HSPI
-// TFT e MAX31865 usam SPI padrao
-
+SPIClass touchscreenSPI = SPIClass(VSPI);
 XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
-Adafruit_MAX31865 thermo = Adafruit_MAX31865(MAX31865_CS, 23, 19, 18);
+Adafruit_MAX31865 thermo = Adafruit_MAX31865(4, 23, 19, 18);
 
-// --- ETHERNET W5500 ---
-#include <Ethernet.h>
+// --- ETHERNET W5500 (ADICIONADO) ---
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
 IPAddress ip_esp(192, 168, 0, 201);      
 IPAddress ip_additel(192, 168, 0, 182);  
@@ -43,6 +39,7 @@ IPAddress gateway(192, 168, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 EthernetClient client;
+SPIClass ethernetSPI = SPIClass(HSPI);
 unsigned long ultimaExecucao = 0;
 const unsigned long intervalo = 30000;
 bool ethernetConectado = false;
@@ -68,7 +65,7 @@ int passoAlterarSenha = 0;
 WiFiManager wm;
 
 // ========================================================
-// FUNÇÕES ETHERNET (Adicionadas)
+// FUNÇÕES ETHERNET (ADICIONADAS)
 // ========================================================
 
 void inicializarEthernet() {
@@ -87,7 +84,7 @@ void inicializarEthernet() {
     ethernetConectado = true;
     Serial.print("✅ Ethernet conectado. IP: ");
     Serial.println(Ethernet.localIP());
-    enviarSetpointAoAdditel(50);  // Setpoint inicial
+    enviarSetpointAoAdditel(50);
   } else {
     ethernetConectado = false;
     Serial.println("❌ Ethernet desconectado.");
@@ -96,11 +93,6 @@ void inicializarEthernet() {
 
 void enviarSetpointAoAdditel(float setpoint) {
   Serial.println("\n--- Enviando Setpoint ao Additel ---");
-  
-  // Desabilitar outros SPI antes de usar Ethernet
-  digitalWrite(XPT2046_CS, HIGH);   
-  digitalWrite(MAX31865_CS, HIGH);  
-  delay(50);
   
   if (client.connect(ip_additel, 8000)) {
     String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
@@ -111,19 +103,10 @@ void enviarSetpointAoAdditel(float setpoint) {
   } else {
     Serial.println("❌ Erro ao conectar ao Additel");
   }
-  
-  delay(50);
-  digitalWrite(XPT2046_CS, LOW);    
-  digitalWrite(MAX31865_CS, LOW);   
 }
 
 void lerStatusAdditel() {
   Serial.println("\n--- Lendo Status do Additel ---");
-  
-  // Desabilitar outros SPI
-  digitalWrite(XPT2046_CS, HIGH);   
-  digitalWrite(MAX31865_CS, HIGH);  
-  delay(50);
   
   if (client.connect(ip_additel, 8000)) {
     client.print("MEASure:SCALar:CONTrol?\r\n");
@@ -142,10 +125,6 @@ void lerStatusAdditel() {
   } else {
     Serial.println("❌ Falha ao conectar");
   }
-  
-  delay(50);
-  digitalWrite(XPT2046_CS, LOW);    
-  digitalWrite(MAX31865_CS, LOW);   
 }
 
 // --- FUNÇÕES DE CORREÇÃO E MEMÓRIA (MANTIDAS DO ARDUINO21) ---
@@ -384,39 +363,28 @@ void handleTouch(int tx, int ty) {
 void setup() {
   Serial.begin(115200); 
   delay(1000); 
-  
-  // Configurar pinos CS como output
-  pinMode(XPT2046_CS, OUTPUT);
-  pinMode(MAX31865_CS, OUTPUT);
-  pinMode(W5500_CS, OUTPUT);
-  
-  // Desabilitar todos inicialmente
-  digitalWrite(XPT2046_CS, HIGH);
-  digitalWrite(MAX31865_CS, HIGH);
-  digitalWrite(W5500_CS, HIGH);
-  
-  delay(100);
-  
+  pinMode(21, OUTPUT); 
+  digitalWrite(21, HIGH); 
   carregarDados();
   
-  // Inicializar VSPI para touchscreen
+  // Inicializar VSPI para touchscreen (MANTIDO DO ARDUINO21)
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   touchscreen.begin(touchscreenSPI); 
   touchscreen.setRotation(1);
   
-  // Inicializar TFT (SPI padrao)
+  // Inicializar TFT (MANTIDO DO ARDUINO21)
   tft.init(); 
   tft.setRotation(1); 
   
-  // Inicializar MAX31865 (SPI padrao)
+  // Inicializar MAX31865 (MANTIDO DO ARDUINO21)
   thermo.begin(MAX31865_4WIRE);
   
-  // Inicializar WiFi
+  // Inicializar WiFi (MANTIDO DO ARDUINO21)
   WiFi.mode(WIFI_STA); 
   WiFi.begin(); 
   wm.setConfigPortalBlocking(false); 
   
-  // Inicializar Ethernet
+  // Inicializar Ethernet (ADICIONADO)
   inicializarEthernet();
   
   drawMainScreen();
@@ -428,7 +396,6 @@ void loop() {
   wm.process();
   Ethernet.maintain();
   
-  // Leitura de Temperatura PT100
   if (millis() - lastUpdate > 500) {
     somaLeituras += thermo.temperature(100.0, 400.0);
     contadorLeituras++;
@@ -450,13 +417,13 @@ void loop() {
     lastUpdate = millis();
   }
   
-  // Leitura Periodica do Additel (a cada 30 segundos)
+  // Leitura Periodica do Additel
   if (ethernetConectado && (millis() - ultimaExecucao >= intervalo)) {
     lerStatusAdditel();
     ultimaExecucao = millis();
   }
   
-  // Processamento Touch
+  // Processamento Touch (MANTIDO DO ARDUINO21)
   if (touchscreen.touched()) {
     TS_Point p = touchscreen.getPoint();
     handleTouch(map(p.x, 200, 3700, 1, 320), map(p.y, 240, 3800, 1, 240)); 
@@ -464,5 +431,5 @@ void loop() {
 }
 
 // ========================================================
-// FIM DO CODIGO - Arduino21 + Ethernet integrados
+// FIM - Arduino21 PURO + Ethernet HSPI
 // ========================================================
