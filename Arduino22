@@ -82,9 +82,9 @@ void desligarEthernet() {
   Serial.println("--- Desligando Ethernet ---");
   
   client.stop();
-  Ethernet.end();
+  // Nota: Ethernet.h não tem .end(), então apenas fechamos o client
   
-  Serial.println("✅ Ethernet desligada");
+  Serial.println("✅ Client Ethernet fechado");
   
   ethernetLigado = false;
 }
