@@ -3,7 +3,7 @@
  * Ficheiro de teste APENAS para comunicação com Additel 875
  * 
  * Objetivo: Verificar se conseguimos conectar e enviar SCPI
- * Sem nenhuma outra funcionalidade (SPI, TFT, Touchscreen, etc)
+ * Com WiFiManager para fácil configuração
  * 
  * IP Additel: 192.168.0.180
  * Porta: 8000
@@ -11,11 +11,8 @@
  */
 
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <lwip/sockets.h>
-
-// Credenciais WiFi
-const char* ssid = "MEO-85D6E0";
-const char* password = "";  // Sem password
 
 // Additel
 IPAddress ip_additel(192, 168, 0, 180);
@@ -30,31 +27,23 @@ void setup() {
   delay(1000);
   
   Serial.println("\n\n=== TEST ADDITEL TCP ===\n");
-  Serial.println("Iniciando WiFi...");
+  Serial.println("Iniciando WiFiManager...");
   
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFiManager wm;
   
-  // Esperar WiFi conectar (máx 20 segundos)
-  int tentativas = 0;
-  while (WiFi.status() != WL_CONNECTED && tentativas < 40) {
-    delay(500);
-    Serial.print(".");
-    tentativas++;
-  }
+  // Modo AP para configuração
+  bool res = wm.autoConnect("SERVIMETRO_CONFIG", "12345678");
   
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiConectado = true;
-    Serial.println("\n✅ WiFi CONECTADO!");
+  if(!res) {
+    Serial.println("❌ WiFi failed to connect");
+    ESP.restart();
+  } else {
+    Serial.println("✅ WiFi CONECTADO!");
     Serial.print("SSID: ");
     Serial.println(WiFi.SSID());
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
-    Serial.print("RSSI: ");
-    Serial.println(WiFi.RSSI());
-  } else {
-    Serial.println("\n❌ WiFi NÃO CONECTOU!");
-    return;
+    wifiConectado = true;
   }
   
   Serial.println("\nAguardando 2 segundos antes de tentar Additel...");
@@ -110,12 +99,13 @@ void loop() {
     Serial.println(resultado);
     Serial.println("\nPossíveis causas:");
     Serial.println("- Additel offline");
-    Serial.println("- IP incorreto");
+    Serial.println("- IP incorreto (192.168.0.180)");
     Serial.println("- Porta bloqueada por firewall");
     Serial.println("- Additel não aceita TCP na porta 8000");
+    Serial.println("- Additel espera comunicação diferente (UDP, etc)");
     close(sock);
-    Serial.println("\nTentando novamente em 5 segundos...\n");
-    delay(5000);
+    Serial.println("\nTentando novamente em 10 segundos...\n");
+    delay(10000);
     return;
   }
   
@@ -152,9 +142,9 @@ void loop() {
     Serial.print("   ");
     Serial.println(buffer);
   } else if (bytes == 0) {
-    Serial.println("   ⚠️ Conexão fechada pelo Additel");
+    Serial.println("   ⚠️ Conexão fechada pelo Additel (sem resposta)");
   } else {
-    Serial.println("   ⚠️ Timeout ou erro ao receber");
+    Serial.println("   ⚠️ Timeout ao receber resposta");
   }
   
   // Fechar
