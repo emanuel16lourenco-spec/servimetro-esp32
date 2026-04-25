@@ -28,12 +28,12 @@ Adafruit_MAX31865 thermo = Adafruit_MAX31865(4, 23, 19, 18);
 
 // ========== TCP DIRETO (SEM Ethernet.h) ==========
 #include <lwip/sockets.h>
-IPAddress ip_additel(192, 168, 0, 182);
+IPAddress ip_additel(192, 168, 0, 180);  // CORRIGIDO: 192.168.0.180
 const uint16_t porta_additel = 8000;
 unsigned long ultimaExecucao = 0;
 const unsigned long intervalo = 30000;
 bool setpointEnviado = false;
-unsigned long tempoConexaoWiFi = 0;
+TaskHandle_t taskSetpoint = NULL;
 // ==============================================
 
 float x_lido[4] = {0, 0, 0, 0}; 
@@ -56,81 +56,23 @@ int passoAlterarSenha = 0;
 
 WiFiManager wm;
 
-// ========== FUNÇÕES TCP ==========
-void enviarSetpointAoAdditel(float setpoint) {
-  if (!setpointEnviado && WiFi.status() == WL_CONNECTED) {
-    Serial.print("\n=== ENVIANDO SETPOINT ===\n");
-    Serial.print("WiFi Status: ");
-    Serial.println(WiFi.status());
-    Serial.print("WiFi SSID: ");
-    Serial.println(WiFi.SSID());
-    Serial.print("IP Local: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("\nTentando conectar a: ");
-    Serial.print(ip_additel);
-    Serial.print(":");
-    Serial.println(porta_additel);
-    
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-      Serial.println("❌ Erro ao criar socket");
-      return;
-    }
-    
-    // Timeout de 5 segundos
-    struct timeval tv;
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    
-    struct sockaddr_in servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(porta_additel);
-    servaddr.sin_addr.s_addr = ip_additel;
-    
-    Serial.print("Conectando...");
-    int result = connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr));
-    if (result < 0) {
-      Serial.print(" ❌ FALHA (erro: ");
-      Serial.print(result);
-      Serial.println(")");
-      Serial.println("Possíveis causas:");
-      Serial.println("1. Additel está offline");
-      Serial.println("2. IP incorreto (192.168.0.182)");
-      Serial.println("3. Porta incorreta (8000)");
-      Serial.println("4. Firewall bloqueando");
-      close(sock);
-      return;
-    }
-    
-    Serial.println(" ✅ CONECTADO!");
-    
-    String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
-    Serial.print("Enviando comando: ");
-    Serial.println(comando);
-    
-    int sent = send(sock, (const char*)comando.c_str(), comando.length(), 0);
-    if (sent < 0) {
-      Serial.println("❌ Erro ao enviar");
-    } else {
-      Serial.print("✅ Enviados ");
-      Serial.print(sent);
-      Serial.println(" bytes");
-      setpointEnviado = true;
-    }
-    
-    close(sock);
-  }
-}
-
-void lerStatusAdditel() {
-  if (WiFi.status() != WL_CONNECTED) return;
+// ========== TASK PARA SETPOINT (NÃO BLOQUEIA) ==========
+void taskEnviarSetpoint(void *parameter) {
+  float setpoint = *(float*)parameter;
+  free(parameter);
   
-  Serial.print("\n=== LENDO STATUS ADDITEL ===\n");
+  Serial.print("\n=== ENVIANDO SETPOINT (em background) ===\n");
+  Serial.print("Tentando conectar a: ");
+  Serial.print(ip_additel);
+  Serial.print(":");
+  Serial.println(porta_additel);
   
   int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) return;
+  if (sock < 0) {
+    Serial.println("❌ Erro ao criar socket");
+    vTaskDelete(NULL);
+    return;
+  }
   
   struct timeval tv;
   tv.tv_sec = 5;
@@ -144,27 +86,29 @@ void lerStatusAdditel() {
   servaddr.sin_addr.s_addr = ip_additel;
   
   if (connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-    Serial.println("❌ Falha ao conectar");
+    Serial.println("❌ Falha ao conectar ao Additel");
     close(sock);
+    vTaskDelete(NULL);
     return;
   }
   
-  const char* comando = "MEASure:SCALar:CONTrol?\r\n";
-  send(sock, comando, strlen(comando), 0);
+  Serial.println("✅ Conectado ao Additel!");
   
-  char buffer[256];
-  int bytes = recv(sock, (unsigned char*)buffer, sizeof(buffer) - 1, 0);
-  if (bytes > 0) {
-    buffer[bytes] = '\0';
-    Serial.print("✅ Resposta: ");
-    Serial.println(buffer);
+  String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
+  Serial.print("Enviando: ");
+  Serial.println(comando);
+  
+  int sent = send(sock, (const char*)comando.c_str(), comando.length(), 0);
+  if (sent > 0) {
+    Serial.println("✅ Setpoint enviado com sucesso!");
   } else {
-    Serial.println("❌ Sem resposta");
+    Serial.println("❌ Erro ao enviar");
   }
   
   close(sock);
+  vTaskDelete(NULL);
 }
-// ====================================
+// ======================================================
 
 // --- FUNÇÕES DE CORREÇÃO E MEMÓRIA ---
 float aplicarCorrecao(float x) {
@@ -419,9 +363,20 @@ void setup() {
 void loop() {
   wm.process();
   
-  // Enviar setpoint quando WiFi conectar
+  // Enviar setpoint quando WiFi conectar (em background - NÃO BLOQUEIA)
   if (WiFi.status() == WL_CONNECTED && !setpointEnviado) {
-    enviarSetpointAoAdditel(50);
+    setpointEnviado = true;  // Marcar para não tentar novamente
+    float *setpoint_ptr = (float*)malloc(sizeof(float));
+    *setpoint_ptr = 50.0;
+    xTaskCreatePinnedToCore(
+      taskEnviarSetpoint,
+      "EnviarSetpoint",
+      4096,
+      (void*)setpoint_ptr,
+      1,
+      &taskSetpoint,
+      0
+    );
   }
   
   if (millis() - lastUpdate > 500) {
@@ -443,12 +398,6 @@ void loop() {
     }
     if (currentScreen == 0 || currentScreen == 1 || currentScreen == 3) drawHeader();
     lastUpdate = millis();
-  }
-  
-  // Leitura Periodica do Additel (a cada 30 seg)
-  if (WiFi.status() == WL_CONNECTED && (millis() - ultimaExecucao >= intervalo)) {
-    lerStatusAdditel();
-    ultimaExecucao = millis();
   }
   
   if (touchscreen.touched()) {
