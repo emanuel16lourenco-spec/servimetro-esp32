@@ -32,7 +32,8 @@ IPAddress ip_additel(192, 168, 0, 182);
 const uint16_t porta_additel = 8000;
 unsigned long ultimaExecucao = 0;
 const unsigned long intervalo = 30000;
-bool ethernetConectado = false;
+bool setpointEnviado = false;
+unsigned long tempoConexaoWiFi = 0;
 // ==============================================
 
 float x_lido[4] = {0, 0, 0, 0}; 
@@ -57,36 +58,41 @@ WiFiManager wm;
 
 // ========== FUNÇÕES TCP ==========
 void enviarSetpointAoAdditel(float setpoint) {
-  Serial.print("Enviando setpoint (");
-  Serial.print(setpoint);
-  Serial.println("°C)...");
-  
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) {
-    Serial.println("❌ Erro ao criar socket");
-    return;
-  }
-  
-  struct sockaddr_in servaddr;
-  memset(&servaddr, 0, sizeof(servaddr));
-  servaddr.sin_family = AF_INET;
-  servaddr.sin_port = htons(porta_additel);
-  servaddr.sin_addr.s_addr = ip_additel;
-  
-  if (connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-    Serial.println("❌ Erro ao conectar");
+  if (!setpointEnviado && WiFi.status() == WL_CONNECTED) {
+    Serial.print("Enviando setpoint (");
+    Serial.print(setpoint);
+    Serial.println("°C)...");
+    
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+      Serial.println("❌ Erro ao criar socket");
+      return;
+    }
+    
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(porta_additel);
+    servaddr.sin_addr.s_addr = ip_additel;
+    
+    if (connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+      Serial.println("❌ Erro ao conectar ao Additel");
+      close(sock);
+      return;
+    }
+    
+    String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
+    send(sock, (const char*)comando.c_str(), comando.length(), 0);
+    Serial.println("✅ Setpoint enviado!");
+    setpointEnviado = true;
+    
     close(sock);
-    return;
   }
-  
-  String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
-  send(sock, (const char*)comando.c_str(), comando.length(), 0);
-  Serial.println("✅ Enviado!");
-  
-  close(sock);
 }
 
 void lerStatusAdditel() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) return;
   
@@ -362,15 +368,17 @@ void setup() {
   WiFi.begin(); 
   wm.setConfigPortalBlocking(false); 
   
-  // Enviar setpoint inicial quando WiFi conectar
-  enviarSetpointAoAdditel(50);
-  
   drawMainScreen();
   Serial.println("✅ Sistema iniciado!");
 }
 
 void loop() {
   wm.process();
+  
+  // Enviar setpoint quando WiFi conectar
+  if (WiFi.status() == WL_CONNECTED && !setpointEnviado) {
+    enviarSetpointAoAdditel(50);
+  }
   
   if (millis() - lastUpdate > 500) {
     somaLeituras += thermo.temperature(100.0, 400.0);
