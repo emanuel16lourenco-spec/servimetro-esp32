@@ -59,9 +59,17 @@ WiFiManager wm;
 // ========== FUNÇÕES TCP ==========
 void enviarSetpointAoAdditel(float setpoint) {
   if (!setpointEnviado && WiFi.status() == WL_CONNECTED) {
-    Serial.print("Enviando setpoint (");
-    Serial.print(setpoint);
-    Serial.println("°C)...");
+    Serial.print("\n=== ENVIANDO SETPOINT ===\n");
+    Serial.print("WiFi Status: ");
+    Serial.println(WiFi.status());
+    Serial.print("WiFi SSID: ");
+    Serial.println(WiFi.SSID());
+    Serial.print("IP Local: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("\nTentando conectar a: ");
+    Serial.print(ip_additel);
+    Serial.print(":");
+    Serial.println(porta_additel);
     
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -69,22 +77,48 @@ void enviarSetpointAoAdditel(float setpoint) {
       return;
     }
     
+    // Timeout de 5 segundos
+    struct timeval tv;
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    
     struct sockaddr_in servaddr;
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(porta_additel);
     servaddr.sin_addr.s_addr = ip_additel;
     
-    if (connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-      Serial.println("❌ Erro ao conectar ao Additel");
+    Serial.print("Conectando...");
+    int result = connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr));
+    if (result < 0) {
+      Serial.print(" ❌ FALHA (erro: ");
+      Serial.print(result);
+      Serial.println(")");
+      Serial.println("Possíveis causas:");
+      Serial.println("1. Additel está offline");
+      Serial.println("2. IP incorreto (192.168.0.182)");
+      Serial.println("3. Porta incorreta (8000)");
+      Serial.println("4. Firewall bloqueando");
       close(sock);
       return;
     }
     
+    Serial.println(" ✅ CONECTADO!");
+    
     String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
-    send(sock, (const char*)comando.c_str(), comando.length(), 0);
-    Serial.println("✅ Setpoint enviado!");
-    setpointEnviado = true;
+    Serial.print("Enviando comando: ");
+    Serial.println(comando);
+    
+    int sent = send(sock, (const char*)comando.c_str(), comando.length(), 0);
+    if (sent < 0) {
+      Serial.println("❌ Erro ao enviar");
+    } else {
+      Serial.print("✅ Enviados ");
+      Serial.print(sent);
+      Serial.println(" bytes");
+      setpointEnviado = true;
+    }
     
     close(sock);
   }
@@ -93,8 +127,15 @@ void enviarSetpointAoAdditel(float setpoint) {
 void lerStatusAdditel() {
   if (WiFi.status() != WL_CONNECTED) return;
   
+  Serial.print("\n=== LENDO STATUS ADDITEL ===\n");
+  
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) return;
+  
+  struct timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   
   struct sockaddr_in servaddr;
   memset(&servaddr, 0, sizeof(servaddr));
@@ -103,6 +144,7 @@ void lerStatusAdditel() {
   servaddr.sin_addr.s_addr = ip_additel;
   
   if (connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+    Serial.println("❌ Falha ao conectar");
     close(sock);
     return;
   }
@@ -114,8 +156,10 @@ void lerStatusAdditel() {
   int bytes = recv(sock, (unsigned char*)buffer, sizeof(buffer) - 1, 0);
   if (bytes > 0) {
     buffer[bytes] = '\0';
-    Serial.print("Status Additel: ");
+    Serial.print("✅ Resposta: ");
     Serial.println(buffer);
+  } else {
+    Serial.println("❌ Sem resposta");
   }
   
   close(sock);
