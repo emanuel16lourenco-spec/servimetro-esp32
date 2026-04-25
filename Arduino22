@@ -22,25 +22,18 @@ String senhaMestra = "1998";
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
 #define XPT2046_CLK 25
-#define W5500_CS 27
-
 SPIClass touchscreenSPI = SPIClass(VSPI);
 XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 Adafruit_MAX31865 thermo = Adafruit_MAX31865(4, 23, 19, 18);
 
-// ========== ETHERNET (MINIMALISTA) ==========
-#include <Ethernet.h>
-byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip_esp(192, 168, 0, 201);      
-IPAddress ip_additel(192, 168, 0, 182);  
-IPAddress gateway(192, 168, 0, 1);
-IPAddress subnet(255, 255, 255, 0);
-EthernetClient client;
+// ========== TCP DIRETO (SEM Ethernet.h) ==========
+#include <lwip/sockets.h>
+IPAddress ip_additel(192, 168, 0, 182);
+const uint16_t porta_additel = 8000;
 unsigned long ultimaExecucao = 0;
 const unsigned long intervalo = 30000;
 bool ethernetConectado = false;
-bool ethernetInit = false;
-// ============================================
+// ==============================================
 
 float x_lido[4] = {0, 0, 0, 0}; 
 float y_real[4] = {VALOR_NULO, VALOR_NULO, VALOR_NULO, VALOR_NULO}; 
@@ -62,61 +55,66 @@ int passoAlterarSenha = 0;
 
 WiFiManager wm;
 
-// ========== FUNÇÕES ETHERNET ==========
-void inicializarEthernet() {
-  if (ethernetInit) return;
-  
-  Serial.println("\n--- Inicializando Ethernet W5500 ---");
-  
-  // Desabilitar CS temporariamente
-  digitalWrite(W5500_CS, HIGH);
-  delay(100);
-  
-  Ethernet.init(W5500_CS);
-  Ethernet.begin(mac, ip_esp, gateway, gateway, subnet);
-  delay(2000);
-  
-  if (Ethernet.linkStatus() == LinkON) {
-    ethernetConectado = true;
-    Serial.print("✅ Ethernet OK. IP: ");
-    Serial.println(Ethernet.localIP());
-    enviarSetpointAoAdditel(50);
-    ethernetInit = true;
-  } else {
-    Serial.println("❌ Ethernet desconectado");
-  }
-}
-
+// ========== FUNÇÕES TCP ==========
 void enviarSetpointAoAdditel(float setpoint) {
   Serial.print("Enviando setpoint (");
   Serial.print(setpoint);
   Serial.println("°C)...");
   
-  if (client.connect(ip_additel, 8000)) {
-    String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
-    client.print(comando);
-    Serial.println("✅ Enviado!");
-    delay(200);
-    client.stop();
-  } else {
-    Serial.println("❌ Erro ao conectar");
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    Serial.println("❌ Erro ao criar socket");
+    return;
   }
+  
+  struct sockaddr_in servaddr;
+  memset(&servaddr, 0, sizeof(servaddr));
+  servaddr.sin_family = AF_INET;
+  servaddr.sin_port = htons(porta_additel);
+  servaddr.sin_addr.s_addr = ip_additel;
+  
+  if (connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+    Serial.println("❌ Erro ao conectar");
+    close(sock);
+    return;
+  }
+  
+  String comando = "SOURce:TEMPerature:TARGet " + String(setpoint, 0) + ",1001\r\n";
+  send(sock, (const char*)comando.c_str(), comando.length(), 0);
+  Serial.println("✅ Enviado!");
+  
+  close(sock);
 }
 
 void lerStatusAdditel() {
-  if (client.connect(ip_additel, 8000)) {
-    client.print("MEASure:SCALar:CONTrol?\r\n");
-    delay(500);
-    if (client.available()) {
-      String resposta = "";
-      while (client.available()) resposta += (char)client.read();
-      Serial.print("Status: ");
-      Serial.println(resposta);
-    }
-    client.stop();
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return;
+  
+  struct sockaddr_in servaddr;
+  memset(&servaddr, 0, sizeof(servaddr));
+  servaddr.sin_family = AF_INET;
+  servaddr.sin_port = htons(porta_additel);
+  servaddr.sin_addr.s_addr = ip_additel;
+  
+  if (connect(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+    close(sock);
+    return;
   }
+  
+  const char* comando = "MEASure:SCALar:CONTrol?\r\n";
+  send(sock, comando, strlen(comando), 0);
+  
+  char buffer[256];
+  int bytes = recv(sock, (unsigned char*)buffer, sizeof(buffer) - 1, 0);
+  if (bytes > 0) {
+    buffer[bytes] = '\0';
+    Serial.print("Status Additel: ");
+    Serial.println(buffer);
+  }
+  
+  close(sock);
 }
-// =====================================
+// ====================================
 
 // --- FUNÇÕES DE CORREÇÃO E MEMÓRIA ---
 float aplicarCorrecao(float x) {
@@ -171,12 +169,7 @@ void drawWiFiSignal(int x, int y) {
 void drawHeader() {
   tft.fillRect(0, 0, 320, 40, 0x1A5CFF); 
   tft.setTextColor(TFT_WHITE); tft.drawString("SERVIMETRO", 10, 12, 2);
-  
-  if (ethernetConectado) {
-    tft.fillCircle(250, 20, 5, TFT_GREEN);
-    tft.setTextDatum(TR_DATUM); 
-    tft.drawString("ETH", 245, 12, 1);
-  } else if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED) {
     tft.fillCircle(305, 20, 5, TFT_GREEN);
     drawWiFiSignal(265, 12);
     tft.setTextDatum(TR_DATUM); tft.drawString(WiFi.SSID().substring(0, 10), 255, 12, 1);
@@ -354,9 +347,6 @@ void setup() {
   pinMode(21, OUTPUT); 
   digitalWrite(21, HIGH); 
   
-  pinMode(W5500_CS, OUTPUT);
-  digitalWrite(W5500_CS, HIGH);
-  
   carregarDados();
   
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
@@ -372,19 +362,15 @@ void setup() {
   WiFi.begin(); 
   wm.setConfigPortalBlocking(false); 
   
+  // Enviar setpoint inicial quando WiFi conectar
+  enviarSetpointAoAdditel(50);
+  
   drawMainScreen();
   Serial.println("✅ Sistema iniciado!");
 }
 
 void loop() {
   wm.process();
-  
-  // Inicializar Ethernet na primeira iteração do loop
-  if (!ethernetInit) {
-    inicializarEthernet();
-  } else {
-    Ethernet.maintain();
-  }
   
   if (millis() - lastUpdate > 500) {
     somaLeituras += thermo.temperature(100.0, 400.0);
@@ -407,8 +393,8 @@ void loop() {
     lastUpdate = millis();
   }
   
-  // Leitura Periodica do Additel
-  if (ethernetConectado && (millis() - ultimaExecucao >= intervalo)) {
+  // Leitura Periodica do Additel (a cada 30 seg)
+  if (WiFi.status() == WL_CONNECTED && (millis() - ultimaExecucao >= intervalo)) {
     lerStatusAdditel();
     ultimaExecucao = millis();
   }
